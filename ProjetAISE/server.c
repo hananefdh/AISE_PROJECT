@@ -32,8 +32,7 @@ pthread_mutex_t clientLock[MAX_CLIENTS];
 
  
 void sauvegarder_donnees() {
-
-    FILE *file = fopen("donnees.txt", "a");
+    FILE *file = fopen("donnees.txt", "w");
     if (file == NULL) {
         perror("Erreur lors de l'ouverture du fichier de sauvegarde");
         return;
@@ -43,7 +42,7 @@ void sauvegarder_donnees() {
         pthread_mutex_lock(&clientLock[i]);
         for (int j = 0; j < 1000; ++j) {
             if (clientKeyValues[i].keyValueStore[j].key[0] != '\0') {
-                fprintf(file, "%s %s\n", clientKeyValues[i].keyValueStore[j].key, clientKeyValues[i].keyValueStore[j].value);
+                fprintf(file, "%d %s %s\n", i, clientKeyValues[i].keyValueStore[j].key, clientKeyValues[i].keyValueStore[j].value);
             }
         }
         pthread_mutex_unlock(&clientLock[i]);
@@ -51,6 +50,7 @@ void sauvegarder_donnees() {
 
     fclose(file);
 }
+
 void charger_donnees() {
     FILE *file = fopen("donnees.txt", "r");
     if (file == NULL) {
@@ -64,19 +64,35 @@ void charger_donnees() {
 
     while (fscanf(file, "%d %s %s\n", &client_index, key, value) == 3) {
         if (client_index >= 0 && client_index < MAX_CLIENTS) {
-            int j = 0;
-            while (clientKeyValues[client_index].keyValueStore[j].key[0] != '\0' && j < 1000) {
-                j++;
+            // Recherche de la clé existante pour mettre à jour la valeur
+            int key_found = 0;
+            for (int j = 0; j < 1000; ++j) {
+                if (strcmp(clientKeyValues[client_index].keyValueStore[j].key, key) == 0) {
+                    // Clé trouvée, mettre à jour la valeur correspondante
+                    strcpy(clientKeyValues[client_index].keyValueStore[j].value, value);
+                    key_found = 1;
+                    break;
+                }
             }
-            if (j < 1000) {
-                strcpy(clientKeyValues[client_index].keyValueStore[j].key, key);
-                strcpy(clientKeyValues[client_index].keyValueStore[j].value, value);
+            // Si la clé n'est pas trouvée, ajouter la nouvelle paire clé-valeur
+            if (!key_found) {
+                for (int j = 0; j < 1000; ++j) {
+                    if (clientKeyValues[client_index].keyValueStore[j].key[0] == '\0') {
+                        strcpy(clientKeyValues[client_index].keyValueStore[j].key, key);
+                        strcpy(clientKeyValues[client_index].keyValueStore[j].value, value);
+                        break;
+                    }
+                }
+                // Gérer le dépassement de capacité si nécessaire
+                // (ce qui peut se produire si la capacité est dépassée sans trouver d'emplacement vide)
             }
         }
     }
 
     fclose(file);
 }
+
+
 
 
 //fonction gestion de clients et commandes 
@@ -150,7 +166,7 @@ void *handle_client(void *arg) {
 
                     char response[] = "OK\n";
                     send(client_socket, response, strlen(response), 0);
-                    
+
                    sauvegarder_donnees();
                 } else if (strcmp(cmd, "GET") == 0) {
                     char *key = strtok(NULL, " ");
@@ -243,8 +259,37 @@ void *handle_client(void *arg) {
                     }else if (strcmp(cmd, "QUIT")  == 0) {
                         
                         close(client_socket);
-                    }                        
+                    } else if (strcmp(cmd, "APPEND") == 0) {
+                                    char *key = strtok(NULL, " ");
+                                    char *value = strtok(NULL, "");
 
+                                    pthread_mutex_lock(&clientLock[client_index]);
+                                    int KeyValueStoreSize = sizeof(clientKeyValues[client_index].keyValueStore) / sizeof(clientKeyValues[client_index].keyValueStore[0]);
+
+                                    // Recherche de la clé dans le keyValueStore
+                                    int key_found = 0;
+                                    for (int i = 0; i < KeyValueStoreSize; ++i) {
+                                        if (strcmp(clientKeyValues[client_index].keyValueStore[i].key, key) == 0) {
+                                            key_found = 1;
+                                            // Concaténation de la nouvelle valeur à la valeur existante (même pour les entiers)
+                                            strcat(clientKeyValues[client_index].keyValueStore[i].value, value);
+                                            break;
+                                        }
+                                    }
+
+                                    pthread_mutex_unlock(&clientLock[client_index]);
+                                    // Envoyer la réponse appropriée au client
+                                    if (key_found) {
+                                        char response[MAX_VALUE_SIZE];
+                                        sprintf(response, "Valeur de la clé '%s' mise à jour\n", key);
+                                        send(client_socket, response, strlen(response), 0);
+                                        sauvegarder_donnees();
+                                    } else {
+                                        char response[MAX_VALUE_SIZE];
+                                        sprintf(response, "Clé '%s' non trouvée\n", key);
+                                        send(client_socket, response, strlen(response), 0);
+                                    }                       
+                                }
                                 }
 
                                 command = strtok(NULL, "\n");
@@ -266,7 +311,7 @@ void *handle_client(void *arg) {
 
 //fonction démarrage  srver 
 void start_server() {
-    
+     charger_donnees();
     // Initialisation du socket serveur et configuration
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket == -1) {
@@ -295,7 +340,7 @@ void start_server() {
 
     printf("Serveur connecté. En attente de connexions...\n");
 
-    charger_donnees();
+   
 
     //création de thread pour gerer les connex simultanées des clients 
     for (int i = 0; i < MAX_CLIENTS; ++i) {
