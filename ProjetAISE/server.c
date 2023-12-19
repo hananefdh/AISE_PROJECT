@@ -6,13 +6,16 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <pthread.h> 
+#include <stdatomic.h>
 
-#define PORT 8081
+#define PORT 8080
 #define BACKLOG_SIZE 5
 #define MAX_COMMAND_SIZE 1024
 #define MAX_KEY_SIZE 256
 #define MAX_VALUE_SIZE 512
 #define MAX_CLIENTS 100
+_Atomic int server_running = 1;
+
 //structure pour les clés / valeurs 
 struct KeyValue {
     char key[MAX_KEY_SIZE];
@@ -27,6 +30,53 @@ struct ClientKeyValue {
 struct ClientKeyValue clientKeyValues[MAX_CLIENTS];
 pthread_mutex_t clientLock[MAX_CLIENTS];
 
+ 
+void sauvegarder_donnees() {
+
+    FILE *file = fopen("donnees.txt", "a");
+    if (file == NULL) {
+        perror("Erreur lors de l'ouverture du fichier de sauvegarde");
+        return;
+    }
+
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
+        pthread_mutex_lock(&clientLock[i]);
+        for (int j = 0; j < 1000; ++j) {
+            if (clientKeyValues[i].keyValueStore[j].key[0] != '\0') {
+                fprintf(file, "%s %s\n", clientKeyValues[i].keyValueStore[j].key, clientKeyValues[i].keyValueStore[j].value);
+            }
+        }
+        pthread_mutex_unlock(&clientLock[i]);
+    }
+
+    fclose(file);
+}
+void charger_donnees() {
+    FILE *file = fopen("donnees.txt", "r");
+    if (file == NULL) {
+        perror("Aucun fichier de données trouvé");
+        return;
+    }
+
+    char key[MAX_KEY_SIZE];
+    char value[MAX_VALUE_SIZE];
+    int client_index;
+
+    while (fscanf(file, "%d %s %s\n", &client_index, key, value) == 3) {
+        if (client_index >= 0 && client_index < MAX_CLIENTS) {
+            int j = 0;
+            while (clientKeyValues[client_index].keyValueStore[j].key[0] != '\0' && j < 1000) {
+                j++;
+            }
+            if (j < 1000) {
+                strcpy(clientKeyValues[client_index].keyValueStore[j].key, key);
+                strcpy(clientKeyValues[client_index].keyValueStore[j].value, value);
+            }
+        }
+    }
+
+    fclose(file);
+}
 
 
 //fonction gestion de clients et commandes 
@@ -51,7 +101,7 @@ void *handle_client(void *arg) {
         pthread_exit(NULL);
     }
     //gérer les différentes commandes reçues du client 
-    while ((bytes_received = recv(client_socket, buffer, sizeof(buffer), 0)) > 0) {
+    while ( server_running &&(  bytes_received = recv(client_socket, buffer, sizeof(buffer), 0)) > 0) {
         buffer[bytes_received] = '\0'; 
 
         char *command = strtok(buffer, "\n"); 
@@ -69,8 +119,10 @@ void *handle_client(void *arg) {
                 int KeyValueStoreSize = sizeof(clientKeyValues[client_index].keyValueStore) / sizeof(clientKeyValues[client_index].keyValueStore[0]);
             //traitement des commandes
                 if (strcmp(cmd, "PING") == 0) {
+
                     char response[] = " > PONG\n";
                     send(client_socket, response, strlen(response), 0);
+
                 } else if (strcmp(cmd, "SET") == 0) {
                     char *key = strtok(NULL, " ");
                     char *value = strtok(NULL, "");
@@ -98,6 +150,8 @@ void *handle_client(void *arg) {
 
                     char response[] = "OK\n";
                     send(client_socket, response, strlen(response), 0);
+                    
+                   sauvegarder_donnees();
                 } else if (strcmp(cmd, "GET") == 0) {
                     char *key = strtok(NULL, " ");
 
@@ -120,6 +174,7 @@ void *handle_client(void *arg) {
                     }
 
                     send(client_socket, response, strlen(response), 0);
+                    
                 } else if (strcmp(cmd, "DEL") == 0) {
                     char *key = strtok(NULL, " ");
 
@@ -142,6 +197,7 @@ void *handle_client(void *arg) {
                         sprintf(response, "Clé '%s' non trouvée\n", key);
                     }
                     send(client_socket, response, strlen(response), 0);
+                    sauvegarder_donnees();
                 }else if (strcmp(cmd, "KEYS") == 0) {
                         char response[MAX_VALUE_SIZE];
                         response[0] = '\0';
@@ -154,6 +210,7 @@ void *handle_client(void *arg) {
                         }
                         pthread_mutex_unlock(&clientLock[client_index]);
                         send(client_socket, response, strlen(response), 0);
+                        
                     } else if (strcmp(cmd, "EXISTS") == 0) {
                         char *key = strtok(NULL, " ");
                         int key_exists = 0;
@@ -174,6 +231,7 @@ void *handle_client(void *arg) {
                             sprintf(response, "Clé '%s' n'existe pas\n", key);
                         }
                         send(client_socket, response, strlen(response), 0);
+                        
                     } else if (strcmp(cmd, "FLUSHALL") == 0) {
                         pthread_mutex_lock(&clientLock[client_index]);
                         memset(clientKeyValues[client_index].keyValueStore, 0, sizeof(clientKeyValues[client_index].keyValueStore));
@@ -181,8 +239,11 @@ void *handle_client(void *arg) {
 
                         char response[] = "Toutes les clés ont été supprimées\n";
                         send(client_socket, response, strlen(response), 0);
-                    }
-                                                    
+                        
+                    }else if (strcmp(cmd, "QUIT")  == 0) {
+                        
+                        close(client_socket);
+                    }                        
 
                                 }
 
@@ -194,14 +255,18 @@ void *handle_client(void *arg) {
                         clientKeyValues[client_index].client_socket = 0;
                         memset(clientKeyValues[client_index].keyValueStore, 0, sizeof(clientKeyValues[client_index].keyValueStore));
                         pthread_mutex_unlock(&clientLock[client_index]);
-
+                        sauvegarder_donnees();
                         close(client_socket);
+                         
                         pthread_exit(NULL);
 }
 
 
+
+
 //fonction démarrage  srver 
 void start_server() {
+    
     // Initialisation du socket serveur et configuration
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket == -1) {
@@ -227,12 +292,17 @@ void start_server() {
         perror("Erreur lors de la mise en écoute");
         exit(EXIT_FAILURE);
     }
-    //création de thread pour gerer les conne simultanées des clients 
+
+    printf("Serveur connecté. En attente de connexions...\n");
+
+    charger_donnees();
+
+    //création de thread pour gerer les connex simultanées des clients 
     for (int i = 0; i < MAX_CLIENTS; ++i) {
         pthread_mutex_init(&clientLock[i], NULL);
     }
-
-    while (1) {
+   
+    while (server_running) {
         // Accepter une nouvelle connexion client
 
         struct sockaddr_in client_address;
@@ -240,6 +310,9 @@ void start_server() {
         
         int *client_socket = malloc(sizeof(int));
         *client_socket = accept(server_socket, (struct sockaddr *)&client_address, &client_address_size);
+
+        printf("Nouvelle connexion client acceptée.\n");
+
         if (*client_socket == -1) {
             perror("Erreur lors de l'acceptation de la connexion du client");
             exit(EXIT_FAILURE);
@@ -250,11 +323,17 @@ void start_server() {
         pthread_create(&tid, NULL, handle_client, client_socket);
         pthread_detach(tid);
     }
-
+    sauvegarder_donnees();
     close(server_socket);
+    
 }
-
+void stop_server() {
+    server_running = 0; // Arrête le serveur
+}
 int main() {
+   sauvegarder_donnees();
+    charger_donnees();
     start_server();
+    stop_server();
     return 0;
 }
