@@ -30,8 +30,9 @@ struct ClientKeyValue {
 struct ClientKeyValue clientKeyValues[MAX_CLIENTS];
 pthread_mutex_t clientLock[MAX_CLIENTS];
 
- 
+ //sauvegarde de données dans un fichier 
 void sauvegarder_donnees() {
+
     FILE *file = fopen("donnees.txt", "w");
     if (file == NULL) {
         perror("Erreur lors de l'ouverture du fichier de sauvegarde");
@@ -39,10 +40,15 @@ void sauvegarder_donnees() {
     }
 
     for (int i = 0; i < MAX_CLIENTS; ++i) {
+
         pthread_mutex_lock(&clientLock[i]);
         for (int j = 0; j < 1000; ++j) {
+
+
+            // vérifier si la première lettre de la clé n'est pas nulle
             if (clientKeyValues[i].keyValueStore[j].key[0] != '\0') {
                 fprintf(file, "%d %s %s\n", i, clientKeyValues[i].keyValueStore[j].key, clientKeyValues[i].keyValueStore[j].value);
+
             }
         }
         pthread_mutex_unlock(&clientLock[i]);
@@ -50,7 +56,7 @@ void sauvegarder_donnees() {
 
     fclose(file);
 }
-
+//charger les données 
 void charger_donnees() {
     FILE *file = fopen("donnees.txt", "r");
     if (file == NULL) {
@@ -83,8 +89,7 @@ void charger_donnees() {
                         break;
                     }
                 }
-                // Gérer le dépassement de capacité si nécessaire
-                // (ce qui peut se produire si la capacité est dépassée sans trouver d'emplacement vide)
+               
             }
         }
     }
@@ -104,6 +109,7 @@ void *handle_client(void *arg) {
 
     int client_index = -1;
     for (int i = 0; i < MAX_CLIENTS; ++i) {
+        //si un emplacement pour un nouveau client est disponible dans le tableau clientKeyValues on verouille cet emplacement 
         if (clientKeyValues[i].client_socket == 0) {
             pthread_mutex_lock(&clientLock[i]);
             clientKeyValues[i].client_socket = client_socket;
